@@ -1,12 +1,13 @@
 {
   "name": "otc-solidity-robusnip",
   "version": "1.0.0",
+  "description": "This project demonstrates a basic Hardhat use case. It comes with a sample contract, a test for that contract, and a Hardhat Ignition module that deploys that contract.",
   "main": "index.js",
   "scripts": {
-    "start": "npx hardhat node",
     "test": "npx hardhat test",
-    "deploy": "npx hardhat run scripts/deploy.js",
-    "compile": "npx hardhat compile"
+    "compile": "npx hardhat compile",
+    "deploy": "npx hardhat run scripts/deploy.js --network localhost",
+    "start": "npx hardhat node"
   },
   "repository": {
     "type": "git",
@@ -19,13 +20,12 @@
     "url": "https://github.com/vlauncher/otc-solidity-robusnip/issues"
   },
   "homepage": "https://github.com/vlauncher/otc-solidity-robusnip#readme",
-  "description": "",
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
     "hardhat": "^2.23.0"
   },
   "dependencies": {
     "@chainlink/contracts": "^0.8.0",
-    "@openzeppelin/contracts": "^5.3.0"
+    "@openzeppelin/contracts": "^4.9.6"
   }
 }
