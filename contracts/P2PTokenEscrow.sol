@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 
@@ -54,7 +54,7 @@ contract P2PTokenEscrow is ReentrancyGuard, Ownable {
     event TradeDisputed(uint256 indexed tradeId);
     event TradeResolved(uint256 indexed tradeId, bool inFavorOfBuyer);
 
-    constructor(address initialOwner) Ownable() {}
+    constructor(address initialOwner) Ownable(initialOwner) {}
 
     modifier onlyAllowedAsset(IERC20 asset) {
         require(allowedPaymentAssets[address(asset)], "Payment asset not allowed");
