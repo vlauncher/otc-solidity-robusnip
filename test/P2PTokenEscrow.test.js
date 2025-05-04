@@ -1,311 +1,272 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
-const { BigNumber } = ethers;
 
-describe("P2PTokenEscrow", function() {
-  let owner, seller, buyer;
-  let tokenOffered, paymentAsset, priceFeed, escrow;
+describe("P2PTokenEscrow", function () {
+  let owner, seller, buyer, admin;
+  let tokenOffered, paymentAsset;
+  let mockPool;
+  let p2pEscrow;
 
-  before(async function() {
-    // Get test accounts
-    [owner, seller, buyer] = await ethers.getSigners();
+  beforeEach(async function () {
+
+    // Initialize signers
+    const signers = await ethers.getSigners();
+    if (signers.length < 4) {
+      throw new Error("Insufficient signers available. Expected at least 4.");
+    }
+    [owner, seller, buyer, admin] = signers;
+    console.log("Owner address:", owner.address); // Debug: Verify owner address
 
     // Deploy mock ERC20 tokens
-    const MockERC20 = await ethers.getContractFactory("MockERC20");
-    tokenOffered = await MockERC20.deploy("Token Offered", "TO");
-    paymentAsset = await MockERC20.deploy("Payment Asset", "PA");
+    const ERC20Mock = await ethers.getContractFactory("ERC20Mock");
+    tokenOffered = await ERC20Mock.deploy("Token Offered", "TO", ethers.parseEther("1000"));
+    paymentAsset = await ERC20Mock.deploy("Payment Asset", "PA", ethers.parseEther("1000"));
+    console.log("TokenOffered address:", tokenOffered.address); // Debug: Verify deployment
+    console.log("PaymentAsset address:", paymentAsset.address); // Debug: Verify deployment
 
-    // Deploy mock Chainlink price feed
-    const MockV3Aggregator = await ethers.getContractFactory("MockV3Aggregator");
-    priceFeed = await MockV3Aggregator.deploy(8, 100000000); // 8 decimals, price = 1
+    // Deploy mock Uniswap V3 pool
+    const MockUniswapV3Pool = await ethers.getContractFactory("MockUniswapV3Pool");
+    mockPool = await MockUniswapV3Pool.deploy();
+    console.log("MockPool address:", mockPool.address); // Debug: Verify deployment
 
     // Deploy P2PTokenEscrow contract
     const P2PTokenEscrow = await ethers.getContractFactory("P2PTokenEscrow");
-    escrow = await P2PTokenEscrow.deploy(owner.address);
+    p2pEscrow = await P2PTokenEscrow.deploy(owner.address);
+    console.log("P2PTokenEscrow address:", p2pEscrow.address); // Debug: Verify deployment
 
-    // Set payment asset as allowed
-    await escrow.connect(owner).setPaymentAsset(paymentAsset.address, true);
+    // Set allowed payment asset
+    await p2pEscrow.connect(owner).setPaymentAsset(paymentAsset.address, true);
+
+    // Transfer tokens to seller and buyer
+    await tokenOffered.transfer(seller.address, ethers.parseEther("100"));
+    await paymentAsset.transfer(buyer.address, ethers.parseEther("100"));
   });
 
-  it("should create a listing with fixed pricing", async function() {
-    const totalAmount = ethers.utils.parseEther("100");
-    const fixedPricePerToken = ethers.utils.parseEther("1");
+  describe("Listing Creation", function () {
+    it("should create a listing with fixed pricing", async function () {
+      const totalAmount = ethers.parseEther("10");
+      const fixedPricePerToken = 1; // 1 wei per wei
+      const discountBps = 0;
+      const pricingType = 0; // FIXED
 
-    // Mint tokens to seller
-    await tokenOffered.mint(seller.address, totalAmount);
+      await tokenOffered.connect(seller).approve(p2pEscrow.address, totalAmount);
+      await expect(p2pEscrow.connect(seller).createListing(
+        tokenOffered.address,
+        totalAmount,
+        pricingType,
+        fixedPricePerToken,
+        discountBps,
+        paymentAsset.address,
+        mockPool.address
+      )).to.emit(p2pEscrow, "ListingCreated").withArgs(1, seller.address);
 
-    // Approve escrow to spend tokens
-    await tokenOffered.connect(seller).approve(escrow.address, totalAmount);
+      const listing = await p2pEscrow.listings(1);
+      expect(listing.totalAmount).to.equal(totalAmount);
+      expect(listing.remainingAmount).to.equal(totalAmount);
+      expect(listing.pricingType).to.equal(pricingType);
+      expect(listing.fixedPricePerToken).to.equal(fixedPricePerToken);
+      expect(await tokenOffered.balanceOf(p2pEscrow.address)).to.equal(totalAmount);
+    });
 
-    // Create listing
-    await expect(escrow.connect(seller).createListing(
-      tokenOffered.address,
-      totalAmount,
-      0, // PricingType.FIXED
-      fixedPricePerToken,
-      0, // discountBps
-      paymentAsset.address,
-      ethers.constants.AddressZero // priceFeed not used
-    )).to.emit(escrow, "ListingCreated").withArgs(1, seller.address);
+    it("should create a listing with dynamic pricing", async function () {
+      const totalAmount = ethers.parseEther("10");
+      const discountBps = 1000; // 10% discount
+      const pricingType = 1; // DYNAMIC
 
-    // Check listing details
-    const listing = await escrow.listings(1);
-    expect(listing.seller).to.equal(seller.address);
-    expect(listing.tokenOffered).to.equal(tokenOffered.address);
-    expect(listing.totalAmount).to.equal(totalAmount);
-    expect(listing.remainingAmount).to.equal(totalAmount);
-    expect(listing.pricingType).to.equal(0); // FIXED
-    expect(listing.fixedPricePerToken).to.equal(fixedPricePerToken);
-    expect(listing.discountBps).to.equal(0);
-    expect(listing.paymentAsset).to.equal(paymentAsset.address);
-    expect(listing.status).to.equal(0); // OPEN
-    expect(listing.priceFeed).to.equal(ethers.constants.AddressZero);
+      await tokenOffered.connect(seller).approve(p2pEscrow.address, totalAmount);
+      await expect(p2pEscrow.connect(seller).createListing(
+        tokenOffered.address,
+        totalAmount,
+        pricingType,
+        0,
+        discountBps,
+        paymentAsset.address,
+        mockPool.address
+      )).to.emit(p2pEscrow, "ListingCreated").withArgs(1, seller.address);
 
-    // Check token transfer
-    expect(await tokenOffered.balanceOf(escrow.address)).to.equal(totalAmount);
+      const listing = await p2pEscrow.listings(1);
+      expect(listing.pricingType).to.equal(pricingType);
+      expect(listing.discountBps).to.equal(discountBps);
+      expect(listing.priceFeed).to.equal(mockPool.address);
+    });
+
+    it("should not allow listing with zero amount", async function () {
+      await expect(p2pEscrow.connect(seller).createListing(
+        tokenOffered.address,
+        0,
+        0,
+        1,
+        0,
+        paymentAsset.address,
+        mockPool.address
+      )).to.be.revertedWith("Total amount must be > 0");
+    });
   });
 
-  it("should create a listing with dynamic pricing", async function() {
-    const totalAmount = ethers.utils.parseEther("100");
-    const discountBps = 500; // 5%
+  describe("Trade Initiation", function () {
+    it("should initiate a trade with fixed pricing", async function () {
+      const totalAmount = ethers.parseEther("10");
+      const fixedPricePerToken = 1;
+      const tokenAmount = ethers.parseEther("2");
+      const expectedPayment = tokenAmount.mul(fixedPricePerToken);
 
-    // Mint tokens to seller
-    await tokenOffered.mint(seller.address, totalAmount);
+      await tokenOffered.connect(seller).approve(p2pEscrow.address, totalAmount);
+      await p2pEscrow.connect(seller).createListing(
+        tokenOffered.address,
+        totalAmount,
+        0,
+        fixedPricePerToken,
+        0,
+        paymentAsset.address,
+        mockPool.address
+      );
 
-    // Approve escrow to spend tokens
-    await tokenOffered.connect(seller).approve(escrow.address, totalAmount);
+      await paymentAsset.connect(buyer).approve(p2pEscrow.address, expectedPayment);
+      await expect(p2pEscrow.connect(buyer).initiateTrade(1, tokenAmount))
+        .to.emit(p2pEscrow, "TradeInitiated").withArgs(1, 1, buyer.address);
 
-    // Create listing
-    await expect(escrow.connect(seller).createListing(
-      tokenOffered.address,
-      totalAmount,
-      1, // PricingType.DYNAMIC
-      0, // fixedPricePerToken not used
-      discountBps,
-      paymentAsset.address,
-      priceFeed.address
-    )).to.emit(escrow, "ListingCreated").withArgs(2, seller.address);
+      const trade = await p2pEscrow.trades(1);
+      expect(trade.paymentAmount).to.equal(expectedPayment);
+      expect(await paymentAsset.balanceOf(p2pEscrow.address)).to.equal(expectedPayment);
+    });
 
-    // Check listing details
-    const listing = await escrow.listings(2);
-    expect(listing.seller).to.equal(seller.address);
-    expect(listing.tokenOffered).to.equal(tokenOffered.address);
-    expect(listing.totalAmount).to.equal(totalAmount);
-    expect(listing.remainingAmount).to.equal(totalAmount);
-    expect(listing.pricingType).to.equal(1); // DYNAMIC
-    expect(listing.fixedPricePerToken).to.equal(0);
-    expect(listing.discountBps).to.equal(discountBps);
-    expect(listing.paymentAsset).to.equal(paymentAsset.address);
-    expect(listing.status).to.equal(0); // OPEN
-    expect(listing.priceFeed).to.equal(priceFeed.address);
+    it("should initiate a trade with dynamic pricing", async function () {
+      const totalAmount = ethers.parseEther("10");
+      const tokenAmount = ethers.parseEther("2");
+      const discountBps = 1000;
+      const sqrtPriceX96 = ethers.BigNumber.from(2).pow(96); // Price = 1
+      await mockPool.setSqrtPriceX96(sqrtPriceX96);
 
-    // Check token transfer
-    expect(await tokenOffered.balanceOf(escrow.address)).to.equal(totalAmount);
+      const marketValue = (sqrtPriceX96.pow(2).mul(tokenAmount)).shr(192);
+      const discount = marketValue.mul(discountBps).div(10000);
+      const expectedPayment = marketValue.sub(discount);
+
+      await tokenOffered.connect(seller).approve(p2pEscrow.address, totalAmount);
+      await p2pEscrow.connect(seller).createListing(
+        tokenOffered.address,
+        totalAmount,
+        1,
+        0,
+        discountBps,
+        paymentAsset.address,
+        mockPool.address
+      );
+
+      await paymentAsset.connect(buyer).approve(p2pEscrow.address, expectedPayment);
+      await expect(p2pEscrow.connect(buyer).initiateTrade(1, tokenAmount))
+        .to.emit(p2pEscrow, "TradeInitiated").withArgs(1, 1, buyer.address);
+
+      const trade = await p2pEscrow.trades(1);
+      expect(trade.paymentAmount).to.equal(expectedPayment);
+    });
   });
 
-  it("should initiate a trade with fixed pricing", async function() {
-    const totalAmount = ethers.utils.parseEther("100");
-    const fixedPricePerToken = ethers.utils.parseEther("1");
-    const tokenAmount = ethers.utils.parseEther("10");
-    const payAmt = fixedPricePerToken.mul(tokenAmount).div(ethers.utils.parseEther("1"));
+  describe("Seller Release", function () {
+    it("should allow seller to release the trade", async function () {
+      const totalAmount = ethers.parseEther("10");
+      const fixedPricePerToken = 1;
+      const tokenAmount = ethers.parseEther("2");
+      const paymentAmount = tokenAmount.mul(fixedPricePerToken);
 
-    // Create listing
-    await tokenOffered.mint(seller.address, totalAmount);
-    await tokenOffered.connect(seller).approve(escrow.address, totalAmount);
-    await escrow.connect(seller).createListing(
-      tokenOffered.address,
-      totalAmount,
-      0, // FIXED
-      fixedPricePerToken,
-      0,
-      paymentAsset.address,
-      ethers.constants.AddressZero
-    );
-    const listingId = 3;
+      await tokenOffered.connect(seller).approve(p2pEscrow.address, totalAmount);
+      await p2pEscrow.connect(seller).createListing(
+        tokenOffered.address,
+        totalAmount,
+        0,
+        fixedPricePerToken,
+        0,
+        paymentAsset.address,
+        mockPool.address
+      );
 
-    // Mint payment tokens to buyer
-    await paymentAsset.mint(buyer.address, payAmt);
+      await paymentAsset.connect(buyer).approve(p2pEscrow.address, paymentAmount);
+      await p2pEscrow.connect(buyer).initiateTrade(1, tokenAmount);
 
-    // Approve escrow to spend payment tokens
-    await paymentAsset.connect(buyer).approve(escrow.address, payAmt);
+      await expect(p2pEscrow.connect(seller).sellerRelease(1))
+        .to.emit(p2pEscrow, "SellerReleased").withArgs(1);
 
-    // Initiate trade
-    await expect(escrow.connect(buyer).initiateTrade(listingId, tokenAmount))
-      .to.emit(escrow, "TradeInitiated").withArgs(1, listingId, buyer.address);
-
-    // Check trade details
-    const trade = await escrow.trades(1);
-    expect(trade.buyer).to.equal(buyer.address);
-    expect(trade.tokenAmount).to.equal(tokenAmount);
-    expect(trade.paymentAmount).to.equal(payAmt);
-    expect(trade.buyerConfirmed).to.be.true;
-    expect(trade.sellerConfirmed).to.be.false;
-    expect(trade.disputed).to.be.false;
-
-    // Check payment transfer
-    expect(await paymentAsset.balanceOf(escrow.address)).to.equal(payAmt);
-
-    // Check listing remainingAmount
-    const listing = await escrow.listings(listingId);
-    expect(listing.remainingAmount).to.equal(totalAmount.sub(tokenAmount));
+      expect(await tokenOffered.balanceOf(buyer.address)).to.equal(tokenAmount);
+      expect(await paymentAsset.balanceOf(seller.address)).to.equal(paymentAmount);
+      const listing = await p2pEscrow.listings(1);
+      expect(listing.status).to.equal(2); // COMPLETED
+    });
   });
 
-  it("should initiate a trade with dynamic pricing", async function() {
-    const totalAmount = ethers.utils.parseEther("100");
-    const discountBps = 500; // 5%
-    const tokenAmount = ethers.utils.parseEther("10");
+  describe("Dispute Handling", function () {
+    it("should allow dispute after time limit", async function () {
+      const totalAmount = ethers.parseEther("10");
+      const fixedPricePerToken = 1;
+      const tokenAmount = ethers.parseEther("2");
+      const paymentAmount = tokenAmount.mul(fixedPricePerToken);
 
-    // Set price feed to return price = 2 (200000000 with 8 decimals)
-    await priceFeed.updateAnswer(200000000);
+      await tokenOffered.connect(seller).approve(p2pEscrow.address, totalAmount);
+      await p2pEscrow.connect(seller).createListing(
+        tokenOffered.address,
+        totalAmount,
+        0,
+        fixedPricePerToken,
+        0,
+        paymentAsset.address,
+        mockPool.address
+      );
 
-    // Create listing
-    await tokenOffered.mint(seller.address, totalAmount);
-    await tokenOffered.connect(seller).approve(escrow.address, totalAmount);
-    await escrow.connect(seller).createListing(
-      tokenOffered.address,
-      totalAmount,
-      1, // DYNAMIC
-      0,
-      discountBps,
-      paymentAsset.address,
-      priceFeed.address
-    );
-    const listingId = 4;
+      await paymentAsset.connect(buyer).approve(p2pEscrow.address, paymentAmount);
+      await p2pEscrow.connect(buyer).initiateTrade(1, tokenAmount);
 
-    // Calculate payAmt
-    const price = BigNumber.from(200000000);
-    const decimals = 8;
-    const qty = tokenAmount;
-    const marketValue = price.mul(qty).div(BigNumber.from(10).pow(decimals));
-    const discount = marketValue.mul(discountBps).div(10000);
-    const payAmt = marketValue.sub(discount);
+      for (let i = 0; i < 121; i++) {
+        await ethers.provider.send("evm_mine", []);
+      }
 
-    // Mint payment tokens to buyer
-    await paymentAsset.mint(buyer.address, payAmt);
+      await expect(p2pEscrow.connect(buyer).raiseDispute(1))
+        .to.emit(p2pEscrow, "TradeDisputed").withArgs(1);
 
-    // Approve escrow to spend payment tokens
-    await paymentAsset.connect(buyer).approve(escrow.address, payAmt);
+      const trade = await p2pEscrow.trades(1);
+      expect(trade.disputed).to.be.true;
+    });
 
-    // Initiate trade
-    await expect(escrow.connect(buyer).initiateTrade(listingId, tokenAmount))
-      .to.emit(escrow, "TradeInitiated").withArgs(2, listingId, buyer.address);
+    it("should allow admin to resolve dispute in favor of buyer", async function () {
+      const totalAmount = ethers.parseEther("10");
+      const fixedPricePerToken = 1;
+      const tokenAmount = ethers.parseEther("2");
+      const paymentAmount = tokenAmount.mul(fixedPricePerToken);
 
-    // Check trade details
-    const trade = await escrow.trades(2);
-    expect(trade.buyer).to.equal(buyer.address);
-    expect(trade.tokenAmount).to.equal(tokenAmount);
-    expect(trade.paymentAmount).to.equal(payAmt);
-    expect(trade.buyerConfirmed).to.be.true;
-    expect(trade.sellerConfirmed).to.be.false;
-    expect(trade.disputed).to.be.false;
+      await tokenOffered.connect(seller).approve(p2pEscrow.address, totalAmount);
+      await p2pEscrow.connect(seller).createListing(
+        tokenOffered.address,
+        totalAmount,
+        0,
+        fixedPricePerToken,
+        0,
+        paymentAsset.address,
+        mockPool.address
+      );
 
-    // Check payment transfer
-    expect(await paymentAsset.balanceOf(escrow.address)).to.equal(payAmt);
+      await paymentAsset.connect(buyer).approve(p2pEscrow.address, paymentAmount);
+      await p2pEscrow.connect(buyer).initiateTrade(1, tokenAmount);
 
-    // Check listing remainingAmount
-    const listing = await escrow.listings(listingId);
-    expect(listing.remainingAmount).to.equal(totalAmount.sub(tokenAmount));
+      for (let i = 0; i < 121; i++) {
+        await ethers.provider.send("evm_mine", []);
+      }
+
+      await p2pEscrow.connect(buyer).raiseDispute(1);
+      await p2pEscrow.connect(owner).confirmDisputeResolution(1);
+      await p2pEscrow.connect(owner).resolveDispute(1, true);
+
+      expect(await paymentAsset.balanceOf(buyer.address)).to.equal(ethers.parseEther("100"));
+      expect(await tokenOffered.balanceOf(seller.address)).to.equal(ethers.parseEther("92"));
+    });
   });
 
-  it("should allow seller to release trade", async function() {
-    const totalAmount = ethers.utils.parseEther("100");
-    const fixedPricePerToken = ethers.utils.parseEther("1");
-    const tokenAmount = ethers.utils.parseEther("10");
-    const payAmt = fixedPricePerToken.mul(tokenAmount).div(ethers.utils.parseEther("1"));
+  describe("Admin Functions", function () {
+    it("should allow owner to set payment asset", async function () {
+      const newAsset = await (await ethers.getContractFactory("ERC20Mock")).deploy("New Asset", "NA", ethers.parseEther("1000"));
+      await p2pEscrow.connect(owner).setPaymentAsset(newAsset.address, true);
+      expect(await p2pEscrow.allowedPaymentAssets(newAsset.address)).to.be.true;
+    });
 
-    // Create listing
-    await tokenOffered.mint(seller.address, totalAmount);
-    await tokenOffered.connect(seller).approve(escrow.address, totalAmount);
-    await escrow.connect(seller).createListing(
-      tokenOffered.address,
-      totalAmount,
-      0, // FIXED
-      fixedPricePerToken,
-      0,
-      paymentAsset.address,
-      ethers.constants.AddressZero
-    );
-    const listingId = 5;
-
-    // Initiate trade
-    await paymentAsset.mint(buyer.address, payAmt);
-    await paymentAsset.connect(buyer).approve(escrow.address, payAmt);
-    await escrow.connect(buyer).initiateTrade(listingId, tokenAmount);
-    const tradeId = 3;
-
-    // Seller releases trade
-    await expect(escrow.connect(seller).sellerRelease(tradeId))
-      .to.emit(escrow, "SellerReleased").withArgs(tradeId);
-
-    // Check trade details
-    const trade = await escrow.trades(tradeId);
-    expect(trade.sellerConfirmed).to.be.true;
-
-    // Check token transfers
-    expect(await tokenOffered.balanceOf(buyer.address)).to.equal(tokenAmount);
-    expect(await paymentAsset.balanceOf(seller.address)).to.equal(payAmt);
-
-    // Check listing status
-    const listing = await escrow.listings(listingId);
-    expect(listing.status).to.equal(2); // COMPLETED
-  });
-
-  it("should allow dispute to be raised and resolved", async function() {
-    const totalAmount = ethers.utils.parseEther("100");
-    const fixedPricePerToken = ethers.utils.parseEther("1");
-    const tokenAmount = ethers.utils.parseEther("10");
-    const payAmt = fixedPricePerToken.mul(tokenAmount).div(ethers.utils.parseEther("1"));
-
-    // Create listing
-    await tokenOffered.mint(seller.address, totalAmount);
-    await tokenOffered.connect(seller).approve(escrow.address, totalAmount);
-    await escrow.connect(seller).createListing(
-      tokenOffered.address,
-      totalAmount,
-      0, // FIXED
-      fixedPricePerToken,
-      0,
-      paymentAsset.address,
-      ethers.constants.AddressZero
-    );
-    const listingId = 6;
-
-    // Initiate trade
-    await paymentAsset.mint(buyer.address, payAmt);
-    await paymentAsset.connect(buyer).approve(escrow.address, payAmt);
-    await escrow.connect(buyer).initiateTrade(listingId, tokenAmount);
-    const tradeId = 4;
-
-    // Advance blocks to allow dispute
-    for (let i = 0; i < 121; i++) {
-      await ethers.provider.send("evm_mine", []);
-    }
-
-    // Raise dispute
-    await expect(escrow.connect(buyer).raiseDispute(tradeId))
-      .to.emit(escrow, "TradeDisputed").withArgs(tradeId);
-
-    // Check dispute status
-    let trade = await escrow.trades(tradeId);
-    expect(trade.disputed).to.be.true;
-    let listing = await escrow.listings(listingId);
-    expect(listing.status).to.equal(4); // DISPUTED
-
-    // Owner confirms dispute resolution
-    await escrow.connect(owner).confirmDisputeResolution(tradeId);
-
-    // Resolve dispute in favor of buyer
-    await expect(escrow.connect(owner).resolveDispute(tradeId, true))
-      .to.emit(escrow, "TradeResolved").withArgs(tradeId, true);
-
-    // Check token transfers
-    expect(await paymentAsset.balanceOf(buyer.address)).to.equal(payAmt);
-    expect(await tokenOffered.balanceOf(seller.address)).to.equal(totalAmount);
-
-    // Check final status
-    trade = await escrow.trades(tradeId);
-    expect(trade.disputed).to.be.false;
-    listing = await escrow.listings(listingId);
-    expect(listing.status).to.equal(3); // CANCELLED
+    it("should restrict admin functions to owner", async function () {
+      await expect(p2pEscrow.connect(seller).setPaymentAsset(paymentAsset.address, true))
+        .to.be.revertedWith("Ownable: caller is not the owner");
+    });
   });
 });

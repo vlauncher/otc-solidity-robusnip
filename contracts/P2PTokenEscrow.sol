@@ -1,11 +1,22 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+
+interface IUniswapV3Pool {
+    function slot0() external view returns (
+        uint160 sqrtPriceX96,
+        int24 tick,
+        uint16 observationIndex,
+        uint16 observationCardinality,
+        uint16 observationCardinalityNext,
+        uint8 feeProtocol,
+        bool unlocked
+    );
+}
 
 contract P2PTokenEscrow is ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
@@ -24,7 +35,7 @@ contract P2PTokenEscrow is ReentrancyGuard, Ownable {
         IERC20 paymentAsset;
         uint256 createdAtBlock;
         TradeStatus status;
-        address priceFeed;
+        address priceFeed; // Uniswap V3 pool address for dynamic pricing
     }
 
     struct Trade {
@@ -45,8 +56,8 @@ contract P2PTokenEscrow is ReentrancyGuard, Ownable {
     mapping(uint256 => Listing) public listings;
     mapping(uint256 => Trade) public trades;
     mapping(address => bool) public allowedPaymentAssets;
-    mapping(uint256 => mapping(address => bool)) public disputeConfirmations;
-    uint256 public constant REQUIRED_CONFIRMATIONS = 2;
+    mapping(uint256 => bool) public disputeConfirmations; // Simplified for single admin
+    uint256 public constant REQUIRED_CONFIRMATIONS = 1; // Single admin confirmation
 
     event ListingCreated(uint256 indexed id, address indexed seller);
     event TradeInitiated(uint256 indexed tradeId, uint256 indexed listingId, address indexed buyer);
@@ -76,7 +87,7 @@ contract P2PTokenEscrow is ReentrancyGuard, Ownable {
         uint256 fixedPricePerToken,
         uint256 discountBps,
         IERC20 paymentAsset,
-        address priceFeed
+        address priceFeed // Uniswap V3 pool address
     ) external nonReentrant onlyAllowedAsset(paymentAsset) returns (uint256 listingId) {
         require(totalAmount > 0, "Total amount must be > 0");
         require(discountBps <= 10000, "Discount must be <= 100%");
@@ -168,11 +179,11 @@ contract P2PTokenEscrow is ReentrancyGuard, Ownable {
     }
 
     function confirmDisputeResolution(uint256 tradeId) external onlyOwner {
-        disputeConfirmations[tradeId][msg.sender] = true;
+        disputeConfirmations[tradeId] = true;
     }
 
     function resolveDispute(uint256 tradeId, bool refundBuyer) external nonReentrant {
-        require(disputeConfirmations[tradeId][msg.sender], "Not confirmed");
+        require(disputeConfirmations[tradeId], "Not confirmed");
         require(
             _countDisputeConfirmations(tradeId) >= REQUIRED_CONFIRMATIONS,
             "Insufficient confirmations"
@@ -213,23 +224,22 @@ contract P2PTokenEscrow is ReentrancyGuard, Ownable {
     function _getDynamicPrice(Listing memory listing, uint256 qty)
         internal view returns (uint256)
     {
-        AggregatorV3Interface priceFeed = AggregatorV3Interface(listing.priceFeed);
-        ( , int price, , uint256 updatedAt, ) = priceFeed.latestRoundData();
+        IUniswapV3Pool pool = IUniswapV3Pool(listing.priceFeed);
+        (uint160 sqrtPriceX96, , , , , , ) = pool.slot0();
         
-        require(price > 0, "Invalid price");
-        require(updatedAt >= block.timestamp - 3600, "Stale price");
+        require(sqrtPriceX96 > 0, "Invalid price");
         
-        uint8 decimals = priceFeed.decimals();
-        return (uint256(price) * qty) / (10 ** decimals);
+        // Calculate price: (sqrtPriceX96^2 * qty) / 2^192
+        // Assuming tokenOffered is token0 and paymentAsset is token1 (adjust if reversed)
+        uint256 price = (uint256(sqrtPriceX96) * uint256(sqrtPriceX96) * qty) >> 192;
+        return price;
     }
 
     function _countDisputeConfirmations(uint256 tradeId)
         internal view returns (uint256 count)
     {
-        for (uint256 i = 0; i < REQUIRED_CONFIRMATIONS; i++) {
-            if (disputeConfirmations[tradeId][owner()]) {
-                count++;
-            }
+        if (disputeConfirmations[tradeId]) {
+            count = 1;
         }
     }
 }

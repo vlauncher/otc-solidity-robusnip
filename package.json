@@ -7,6 +7,8 @@
     "test": "npx hardhat test",
     "compile": "npx hardhat compile",
     "deploy": "npx hardhat run scripts/deploy.js --network localhost",
+    "deploy:testnet": "npx hardhat run scripts/deploy.js --network bscTestnet",
+    "deploy:mainnet": "npx hardhat run scripts/deploy.js --network bscMainnet",
     "start": "npx hardhat node"
   },
   "repository": {
@@ -22,11 +24,11 @@
   "homepage": "https://github.com/vlauncher/otc-solidity-robusnip#readme",
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@openzeppelin/contracts": "^5.3.0",
     "hardhat": "^2.23.0"
   },
   "dependencies": {
     "@chainlink/contracts": "^0.8.0",
-    "@openzeppelin/contracts": "^5.3.0",
     "dotenv": "^16.5.0"
   }
 }
