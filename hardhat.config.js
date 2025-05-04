@@ -13,5 +13,9 @@ module.exports = {
       url: "https://bsc-dataseed.binance.org/",
       accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
     },
+    mainnet: {
+      url: "https://mainnet.infura.io/v3/a68a530997d7411f9b92f9885aea1ab2",
+      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
+    }
   },
 };
